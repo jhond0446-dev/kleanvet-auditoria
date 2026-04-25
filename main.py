@@ -30,6 +30,7 @@ load_dotenv()
 # ============================================================
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 AIRTABLE_API_KEY = os.getenv("AIRTABLE_API_KEY")
 AIRTABLE_BASE_ID = os.getenv("AIRTABLE_BASE_ID")
 AIRTABLE_TABLE_PRESCRIPCIONES = os.getenv("AIRTABLE_TABLE_PRESCRIPCIONES", "Prescripciones")
@@ -66,138 +67,115 @@ cortes_en_proceso = {}
 
 PROMPT_CAJA = """Eres un motor de extraccion OCR para etiquetas farmaceuticas veterinarias de CAJA.
 
-CONTEXTO IMPORTANTE: La imagen contiene MULTIPLES etiquetas (tipicamente 3 etiquetas lado a lado por fila). Cada etiqueta es INDEPENDIENTE. NO mezcles datos entre etiquetas vecinas.
+El PDF que recibes contiene MULTIPLES paginas con MULTIPLES etiquetas de CAJA en cada pagina (tipicamente 3 etiquetas lado a lado por fila). Tu tarea: extraer CADA etiqueta visible en TODO el documento.
 
-Extrae CADA etiqueta visible como un objeto separado en un array JSON. Si ves 9 etiquetas, devuelve 9 objetos.
+REGLAS CRITICAS:
 
-REGLAS CRITICAS DE LECTURA:
+1. NUMERO_LOTE: SIEMPRE formato "LC-X-XXX-XX-XX VET" (ej: "LC-1-038-03-26 VET").
+   - SIEMPRE empieza con "LC-" y termina con "VET"
+   - Si lo que ves NO tiene este formato, devuelve null
+   - Aparece bajo "N° Lote:"
 
-1. NUMERO_LOTE: SIEMPRE tiene el formato "LC-X-XXX-XX-XX VET" (ej: "LC-1-038-03-26 VET", "LC-1-049-03-26 VET"). 
-   - SIEMPRE empieza con "LC-" 
-   - SIEMPRE termina con "VET"
-   - Si lo que ves NO empieza con "LC-" y NO termina con "VET", NO es el lote.
-   - Aparece bajo el titulo "N° Lote:"
-   - Si no encuentras un lote con este formato, devuelve null
-
-2. DOCUMENTO_ACUDIENTE: Es un numero (cedula o NIT), tipicamente 7-11 digitos.
-   - NUNCA es el numero de lote
+2. DOCUMENTO_ACUDIENTE: Solo digitos (cedula 7-11 caracteres).
    - NUNCA empieza con "LC"
    - Aparece bajo "N° Documento de Identidad Acudiente:"
 
-3. NOMBRE_PACIENTE: Aparece bajo "Nombre del Paciente:" (PRIMER campo de la etiqueta, arriba)
-   - Es UN solo nombre corto: "Jade", "Milo", "Sasha", "Bruno", "Sol", "Tony"
-   - NO confundir con nombre_acudiente
+3. NOMBRE_PACIENTE: bajo "Nombre del Paciente:". Una palabra corta (Jade, Milo, Sasha, Bruno).
 
-4. NOMBRE_ACUDIENTE: Aparece bajo "Nombre Acudiente:" 
-   - Es el nombre completo del DUEÑO/empresa: "Javier Garcia", "Daniela Gomez", "World pets"
-   - NUNCA es "Martha Lopez" (Martha Lopez es siempre preparado_por)
-
-5. PREPARADO_POR y QF: SIEMPRE es "Martha Lopez" (sin importar lo que parezca)
-
-REGLA ANTI-CONFUSION:
-- Si extraes algo como numero_lote y NO tiene formato "LC-X-XXX-XX-XX VET", devuelve null en numero_lote
-- Si extraes algo como documento_acudiente y empieza con "LC", lo confundiste, intercambia los campos
-
-CAMPOS POR ETIQUETA (objeto JSON):
-{
-  "numero_lote": "LC-X-XXX-XX-XX VET" o null,
-  "nombre_paciente": "string" (corto, una palabra usualmente),
-  "nombre_acudiente": "string" (NO Martha Lopez, NO null si es legible),
-  "documento_acudiente": "string" (solo digitos),
-  "ubicacion": "string" (ciudad),
-  "preparado_por": "Martha Lopez",
-  "fecha_hora_preparacion": "DD/MM/AAAA HH:MMam/pm",
-  "fecha_limite_uso": "DD/MES/AAAA",
-  "dosis": "string",
-  "via_administracion": "Oral",
-  "producto": "CBD X%" o null,
-  "codigo_formato": "CP-FM-FO-218" (codigo arriba derecha)
-}
-
-Responde SOLO con array JSON valido, sin markdown, sin texto extra:
-[{...}, {...}, ...]"""
-
-PROMPT_FRASCO = """Eres un motor de extraccion OCR para etiquetas farmaceuticas veterinarias de FRASCO.
-
-CONTEXTO IMPORTANTE: La imagen contiene MULTIPLES etiquetas de FRASCO (tipicamente 2-3 etiquetas lado a lado, layout HORIZONTAL). Cada etiqueta es INDEPENDIENTE. NO mezcles datos entre etiquetas vecinas.
-
-Extrae CADA etiqueta visible como un objeto separado en un array JSON.
-
-REGLAS CRITICAS DE LECTURA:
-
-1. NUMERO_LOTE: SIEMPRE tiene el formato "LC-X-XXX-XX-XX VET" (ej: "LC-1-038-03-26 VET").
-   - SIEMPRE empieza con "LC-" 
-   - SIEMPRE termina con "VET"
-   - Si lo que ves NO tiene este formato, NO es el lote (devuelve null)
-   - Aparece bajo "N° Lote:"
-
-2. DOCUMENTO_ACUDIENTE: Numero de cedula/NIT (7-11 digitos puros).
-   - NUNCA empieza con "LC"
-   - Aparece bajo "N° Documento de identidad Acudiente:"
-
-3. NOMBRE_PACIENTE: Aparece bajo "Nombre paciente:" (arriba a la izquierda)
-   - Una palabra corta: "Jade", "Milo", "Sol"
-
-4. NOMBRE_ACUDIENTE: Aparece bajo "Nombre Acudiente:"
-   - Nombre completo de persona/empresa
-   - NUNCA es "Martha Lopez"
+4. NOMBRE_ACUDIENTE: bajo "Nombre Acudiente:". Nombre completo de persona/empresa.
+   - NUNCA es "Martha Lopez" (Martha Lopez es preparado_por)
 
 5. PREPARADO_POR y QF: SIEMPRE "Martha Lopez"
 
-CAMPOS POR ETIQUETA:
+NO mezcles datos entre etiquetas vecinas. Cada etiqueta es independiente.
+
+Extrae TODAS las etiquetas del PDF como array JSON. Si hay 30 etiquetas en el PDF, devuelve 30 objetos.
+
+Cada objeto:
 {
   "numero_lote": "LC-X-XXX-XX-XX VET" o null,
-  "nombre_paciente": "string" corto,
-  "nombre_acudiente": "string" (NO Martha Lopez),
-  "documento_acudiente": "string" digitos,
+  "nombre_paciente": "string",
+  "nombre_acudiente": "string",
+  "documento_acudiente": "string",
   "ubicacion": "string",
   "preparado_por": "Martha Lopez",
   "fecha_hora_preparacion": "string",
   "fecha_limite_uso": "string",
-  "dosis": "string",
   "via_administracion": "Oral",
-  "producto": "CBD X%" o null,
-  "codigo_formato": "CP-FM-FO-217"
+  "codigo_formato": "CP-FM-FO-218"
 }
 
-Responde SOLO con array JSON valido:
-[{...}, {...}]"""
+Responde SOLO con array JSON valido, sin markdown, sin texto adicional:
+[{...}, {...}, ...]"""
+
+PROMPT_FRASCO = """Eres un motor de extraccion OCR para etiquetas farmaceuticas veterinarias de FRASCO.
+
+El PDF contiene MULTIPLES paginas con MULTIPLES etiquetas de FRASCO (layout horizontal, 2-3 etiquetas lado a lado). Extrae CADA etiqueta visible.
+
+REGLAS CRITICAS:
+
+1. NUMERO_LOTE: formato "LC-X-XXX-XX-XX VET". Si no tiene ese formato, null.
+2. DOCUMENTO_ACUDIENTE: solo digitos.
+3. NOMBRE_PACIENTE: bajo "Nombre paciente:".
+4. NOMBRE_ACUDIENTE: bajo "Nombre Acudiente:". NUNCA es "Martha Lopez".
+5. PREPARADO_POR: SIEMPRE "Martha Lopez".
+
+NO mezcles datos entre etiquetas vecinas.
+
+Extrae TODAS las etiquetas como array JSON:
+[
+  {
+    "numero_lote": "LC-X-XXX-XX-XX VET" o null,
+    "nombre_paciente": "string",
+    "nombre_acudiente": "string",
+    "documento_acudiente": "string",
+    "ubicacion": "string",
+    "preparado_por": "Martha Lopez",
+    "fecha_hora_preparacion": "string",
+    "fecha_limite_uso": "string",
+    "via_administracion": "Oral",
+    "codigo_formato": "CP-FM-FO-217"
+  }
+]
+
+Responde SOLO con array JSON valido, sin markdown."""
 
 PROMPT_PRESCRIPCION = """Eres un motor OCR para recetas medicas veterinarias.
 
-La imagen contiene UNA prescripcion. Extrae los datos.
+El PDF puede contener MULTIPLES prescripciones. Extrae CADA prescripcion como un objeto.
 
 CAMPO numero_prescripcion - CRITICO:
-SOLO extraelo si esta precedido EXPLICITAMENTE por "Receta N°", "Rx N°", "Prescripcion N°", "Folio N°".
-NO extraigas como numero_prescripcion: cedulas, codigos de barras, telefonos, fechas, lotes.
-Si tienes duda, devuelve null. Prefiere null sobre inventar.
+SOLO extraelo si esta precedido por "Receta N°", "Rx N°", "Prescripcion N°", "No. Prescripcion:".
+NO extraigas como numero_prescripcion: cedulas, codigos de barras, telefonos, fechas, lotes, TPs.
+Si tienes duda, devuelve null.
 
-CAMPOS:
-- fecha_prescripcion (DD/MM/AAAA)
-- nombre_paciente
-- nombre_acudiente
-- documento_acudiente
-- medicamento_formulado
-- via_administracion
-- dosis_instrucciones
-- numero_prescripcion (ver reglas arriba)
+Cada objeto:
+{
+  "numero_prescripcion": "string" o null,
+  "fecha_prescripcion": "DD/MM/AAAA",
+  "nombre_paciente": "string",
+  "nombre_acudiente": "string",
+  "documento_acudiente": "string",
+  "medicamento_formulado": "string",
+  "via_administracion": "string"
+}
 
-Responde SOLO con objeto JSON plano, sin markdown."""
+Responde SOLO con array JSON valido."""
 
 PROMPT_ENVIO = """Eres un motor OCR para guias de envio.
 
-La imagen contiene una o varias etiquetas de envio. Extrae datos del DESTINATARIO (no del remitente).
+El PDF contiene MULTIPLES guias de envio. Extrae datos del DESTINATARIO de cada una.
 
-CAMPOS por etiqueta:
-- nombre_destinatario
-- direccion_entrega
-- ciudad_destino
-- telefono_contacto
-- numero_guia_referencia
-- documento_destinatario
-- nombre_mascota (si aparece)
+Cada objeto:
+{
+  "nombre_destinatario": "string",
+  "direccion_entrega": "string",
+  "ciudad_destino": "string",
+  "telefono_contacto": "string",
+  "documento_destinatario": "string"
+}
 
-Responde SOLO con array JSON, sin markdown."""
+Responde SOLO con array JSON valido con TODAS las guias del PDF."""
 
 # ============================================================
 # HELPERS
@@ -300,47 +278,91 @@ async def file_to_images_b64(file_bytes: bytes, filename: str) -> list[str]:
 
 
 # ============================================================
-# OCR CON OPENAI
+# OCR CON CLAUDE (API NATIVA DE PDF)
 # ============================================================
 
-async def ocr_with_openai(image_b64: str, prompt: str, semaphore: asyncio.Semaphore) -> dict:
-    """Procesa una imagen con GPT-4o vision."""
+async def ocr_pdf_with_claude(pdf_bytes: bytes, prompt: str, semaphore: asyncio.Semaphore) -> dict:
+    """Procesa un PDF completo con Claude Sonnet 4.5 (PDF nativo)."""
     async with semaphore:
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(timeout=300.0) as client:
             try:
+                pdf_b64 = base64.b64encode(pdf_bytes).decode()
                 response = await client.post(
-                    "https://api.openai.com/v1/chat/completions",
+                    "https://api.anthropic.com/v1/messages",
                     headers={
-                        "Authorization": f"Bearer {OPENAI_API_KEY}",
-                        "Content-Type": "application/json",
+                        "x-api-key": ANTHROPIC_API_KEY,
+                        "anthropic-version": "2023-06-01",
+                        "content-type": "application/json",
                     },
                     json={
-                        "model": "gpt-4o",
+                        "model": "claude-sonnet-4-5",
+                        "max_tokens": 16000,
                         "messages": [
                             {
                                 "role": "user",
                                 "content": [
-                                    {"type": "text", "text": prompt},
                                     {
-                                        "type": "image_url",
-                                        "image_url": {
-                                            "url": f"data:image/png;base64,{image_b64}",
-                                            "detail": "high",
+                                        "type": "document",
+                                        "source": {
+                                            "type": "base64",
+                                            "media_type": "application/pdf",
+                                            "data": pdf_b64,
                                         },
                                     },
+                                    {"type": "text", "text": prompt},
                                 ],
                             }
                         ],
-                        "max_tokens": 4000,
-                        "temperature": 0,
                     },
                 )
                 response.raise_for_status()
                 data = response.json()
-                text = data["choices"][0]["message"]["content"]
+                text = data["content"][0]["text"]
                 return parse_ocr_response(text)
             except Exception as e:
-                print(f"Error OCR: {e}")
+                print(f"Error OCR Claude: {e}")
+                return {"error": str(e), "results": []}
+
+
+async def ocr_image_with_claude(image_b64: str, prompt: str, semaphore: asyncio.Semaphore) -> dict:
+    """Procesa una imagen con Claude (para archivos no-PDF)."""
+    async with semaphore:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            try:
+                response = await client.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers={
+                        "x-api-key": ANTHROPIC_API_KEY,
+                        "anthropic-version": "2023-06-01",
+                        "content-type": "application/json",
+                    },
+                    json={
+                        "model": "claude-sonnet-4-5",
+                        "max_tokens": 8000,
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "image",
+                                        "source": {
+                                            "type": "base64",
+                                            "media_type": "image/png",
+                                            "data": image_b64,
+                                        },
+                                    },
+                                    {"type": "text", "text": prompt},
+                                ],
+                            }
+                        ],
+                    },
+                )
+                response.raise_for_status()
+                data = response.json()
+                text = data["content"][0]["text"]
+                return parse_ocr_response(text)
+            except Exception as e:
+                print(f"Error OCR Claude: {e}")
                 return {"error": str(e), "results": []}
 
 
@@ -791,25 +813,27 @@ async def process_corte(corte_id: str, corte_nombre: str, archivos: list):
     # 2. OCR en paralelo para cada tipo
     async def process_one(archivo, tipo):
         prompt = get_prompt_for_type(tipo)
-        # Convertir archivo a lista de imagenes (PDF -> N paginas, Imagen -> 1)
-        images_b64 = await file_to_images_b64(archivo["content"], archivo["filename"])
+        is_pdf = archivo["filename"].lower().endswith(".pdf") or archivo["content"][:4] == b"%PDF"
         
-        if not images_b64:
-            print(f"  ! No se pudo procesar {archivo['filename']}")
-            cortes_en_proceso[corte_id]["progreso"]["procesados"] += 1
-            return []
-        
-        print(f"  Procesando {archivo['filename']}: {len(images_b64)} pagina(s)")
-        
-        # Procesar cada pagina con OCR
-        all_results = []
-        for idx, img_b64 in enumerate(images_b64):
-            result = await ocr_with_openai(img_b64, prompt, semaphore)
-            page_results = result.get("results", [])
-            all_results.extend(page_results)
+        if is_pdf:
+            # Mandar PDF completo a Claude (procesa multiples paginas a la vez)
+            print(f"  Procesando {archivo['filename']} (PDF nativo)")
+            result = await ocr_pdf_with_claude(archivo["content"], prompt, semaphore)
+            results = result.get("results", [])
+        else:
+            # Convertir imagen a base64 y procesar
+            images_b64 = await file_to_images_b64(archivo["content"], archivo["filename"])
+            if not images_b64:
+                cortes_en_proceso[corte_id]["progreso"]["procesados"] += 1
+                return []
+            print(f"  Procesando {archivo['filename']} (imagen)")
+            results = []
+            for img_b64 in images_b64:
+                r = await ocr_image_with_claude(img_b64, prompt, semaphore)
+                results.extend(r.get("results", []))
         
         cortes_en_proceso[corte_id]["progreso"]["procesados"] += 1
-        return all_results
+        return results
     
     ocr_results = {"caja": [], "frasco": [], "prescripcion": [], "envio": []}
     
