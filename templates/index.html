@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Klean-Vet · Auditoría de Etiquetas</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; }
+    .dropzone-active { border-color: #6366f1; background-color: #eef2ff; }
+    pre { white-space: pre-wrap; word-wrap: break-word; }
+  </style>
+</head>
+<body class="bg-slate-50 min-h-screen">
+  <div class="max-w-3xl mx-auto px-4 py-8">
+
+    <!-- Header -->
+    <div class="text-center mb-8">
+      <h1 class="text-3xl font-bold text-slate-800">Klean-Vet</h1>
+      <p class="text-slate-600 mt-2">Sistema de Auditoría de Etiquetas</p>
+    </div>
+
+    <!-- Form principal -->
+    <div id="form-section" class="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+
+      <div class="mb-6">
+        <label class="block text-sm font-semibold text-slate-700 mb-2">
+          Nombre del Corte
+        </label>
+        <input
+          type="text"
+          id="corte-nombre"
+          placeholder="Ej: CORTE 1 - 1% 15ml"
+          class="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+        >
+      </div>
+
+      <div class="mb-6">
+        <label class="block text-sm font-semibold text-slate-700 mb-2">
+          Archivos del Corte
+        </label>
+        <div
+          id="dropzone"
+          class="border-2 border-dashed border-slate-300 rounded-xl p-8 text-center cursor-pointer hover:bg-slate-50 transition-all"
+        >
+          <svg class="mx-auto h-12 w-12 text-slate-400 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
+          </svg>
+          <p class="text-slate-700 font-medium">Arrastra los archivos aquí</p>
+          <p class="text-sm text-slate-500 mt-1">o haz click para seleccionar</p>
+          <p class="text-xs text-slate-400 mt-3">
+            Acepta: imágenes (.jpg, .png) y PDFs<br>
+            Los archivos deben tener "CAJA", "FRASCO", "PRESCRIPCION" o "ENVIO" en el nombre
+          </p>
+          <input type="file" id="file-input" multiple accept="image/*,.pdf" class="hidden">
+        </div>
+
+        <div id="file-list" class="mt-4 space-y-1 hidden">
+          <p class="text-sm font-semibold text-slate-700">Archivos seleccionados:</p>
+          <div id="file-counter" class="text-sm text-slate-600"></div>
+          <div id="file-categories" class="text-xs text-slate-500 mt-2"></div>
+        </div>
+      </div>
+
+      <button
+        id="start-btn"
+        disabled
+        class="w-full bg-indigo-600 text-white font-semibold py-3 rounded-lg hover:bg-indigo-700 transition disabled:bg-slate-300 disabled:cursor-not-allowed"
+      >
+        Iniciar Auditoría
+      </button>
+    </div>
+
+    <!-- Status section (hidden inicialmente) -->
+    <div id="status-section" class="hidden bg-white rounded-2xl shadow-sm border border-slate-200 p-6 mt-6">
+      <div class="flex items-center gap-3 mb-4">
+        <div id="status-spinner" class="w-6 h-6 border-2 border-indigo-200 border-t-indigo-600 rounded-full animate-spin"></div>
+        <h2 id="status-title" class="text-lg font-semibold text-slate-800">Procesando...</h2>
+      </div>
+      <p id="status-message" class="text-sm text-slate-600 mb-3">Iniciando análisis de archivos</p>
+      <div class="bg-slate-100 rounded-lg p-3">
+        <div class="flex justify-between text-xs text-slate-600 mb-1">
+          <span id="progress-text">0 de 0 archivos procesados</span>
+          <span id="progress-percent">0%</span>
+        </div>
+        <div class="bg-slate-200 rounded-full h-2 overflow-hidden">
+          <div id="progress-bar" class="bg-indigo-600 h-full transition-all duration-300" style="width: 0%"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Reporte final (hidden inicialmente) -->
+    <div id="report-section" class="hidden bg-white rounded-2xl shadow-sm border border-slate-200 p-6 mt-6">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-lg font-semibold text-slate-800">Reporte de Auditoría</h2>
+        <button id="new-audit-btn" class="text-sm text-indigo-600 hover:underline">
+          Nueva auditoría
+        </button>
+      </div>
+
+      <div class="grid grid-cols-3 gap-3 mb-6">
+        <div class="bg-emerald-50 border border-emerald-200 rounded-lg p-3">
+          <div id="summary-ok" class="text-2xl font-bold text-emerald-700">0</div>
+          <div class="text-xs text-emerald-600 mt-1">Completas</div>
+        </div>
+        <div class="bg-amber-50 border border-amber-200 rounded-lg p-3">
+          <div id="summary-errors" class="text-2xl font-bold text-amber-700">0</div>
+          <div class="text-xs text-amber-600 mt-1">Con problemas</div>
+        </div>
+        <div class="bg-rose-50 border border-rose-200 rounded-lg p-3">
+          <div id="summary-orphans" class="text-2xl font-bold text-rose-700">0</div>
+          <div class="text-xs text-rose-600 mt-1">Huérfanos</div>
+        </div>
+      </div>
+
+      <div class="bg-slate-900 text-slate-100 rounded-lg p-4 text-sm font-mono overflow-x-auto">
+        <pre id="report-content"></pre>
+      </div>
+    </div>
+
+  </div>
+
+  <script>
+    const dropzone = document.getElementById('dropzone');
+    const fileInput = document.getElementById('file-input');
+    const fileList = document.getElementById('file-list');
+    const fileCounter = document.getElementById('file-counter');
+    const fileCategories = document.getElementById('file-categories');
+    const startBtn = document.getElementById('start-btn');
+    const corteInput = document.getElementById('corte-nombre');
+
+    let selectedFiles = [];
+
+    // Drag and drop
+    dropzone.addEventListener('click', () => fileInput.click());
+    dropzone.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      dropzone.classList.add('dropzone-active');
+    });
+    dropzone.addEventListener('dragleave', () => {
+      dropzone.classList.remove('dropzone-active');
+    });
+    dropzone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropzone.classList.remove('dropzone-active');
+      handleFiles(e.dataTransfer.files);
+    });
+
+    fileInput.addEventListener('change', (e) => handleFiles(e.target.files));
+
+    function classify(filename) {
+      const upper = filename.toUpperCase();
+      if (upper.includes('CAJA')) return 'caja';
+      if (upper.includes('FRASCO')) return 'frasco';
+      if (upper.includes('PRESCRIPCION') || upper.includes('RECETA')) return 'prescripcion';
+      if (upper.includes('ENVIO') || upper.includes('GUIA')) return 'envio';
+      return null;
+    }
+
+    function handleFiles(files) {
+      selectedFiles = Array.from(files);
+      
+      if (selectedFiles.length === 0) {
+        fileList.classList.add('hidden');
+        return;
+      }
+
+      const counts = { caja: 0, frasco: 0, prescripcion: 0, envio: 0, desconocido: 0 };
+      for (const f of selectedFiles) {
+        const tipo = classify(f.name);
+        if (tipo) counts[tipo]++;
+        else counts.desconocido++;
+      }
+
+      fileList.classList.remove('hidden');
+      fileCounter.textContent = `${selectedFiles.length} archivos seleccionados`;
+      
+      let cats = [];
+      if (counts.caja) cats.push(`📦 ${counts.caja} cajas`);
+      if (counts.frasco) cats.push(`💧 ${counts.frasco} frascos`);
+      if (counts.prescripcion) cats.push(`📋 ${counts.prescripcion} prescripciones`);
+      if (counts.envio) cats.push(`📮 ${counts.envio} envíos`);
+      if (counts.desconocido) cats.push(`⚠️ ${counts.desconocido} sin clasificar`);
+      
+      fileCategories.innerHTML = cats.join(' · ');
+      
+      updateButton();
+    }
+
+    corteInput.addEventListener('input', updateButton);
+
+    function updateButton() {
+      const hasFiles = selectedFiles.length > 0;
+      const hasName = corteInput.value.trim().length > 0;
+      startBtn.disabled = !(hasFiles && hasName);
+    }
+
+    startBtn.addEventListener('click', async () => {
+      const formData = new FormData();
+      formData.append('corte_nombre', corteInput.value.trim());
+      for (const f of selectedFiles) {
+        formData.append('archivos', f);
+      }
+
+      // Mostrar status, ocultar form
+      document.getElementById('form-section').classList.add('hidden');
+      document.getElementById('status-section').classList.remove('hidden');
+
+      try {
+        const resp = await fetch('/api/start', {
+          method: 'POST',
+          body: formData,
+        });
+        const data = await resp.json();
+        
+        if (resp.ok && data.corte_id) {
+          pollStatus(data.corte_id);
+        } else {
+          showError('Error al iniciar la auditoría');
+        }
+      } catch (e) {
+        showError('Error de red: ' + e.message);
+      }
+    });
+
+    async function pollStatus(corteId) {
+      const totalFiles = selectedFiles.length;
+      
+      const interval = setInterval(async () => {
+        try {
+          const resp = await fetch(`/api/status/${corteId}`);
+          const data = await resp.json();
+          
+          updateProgress(data, totalFiles);
+          
+          if (data.estado === 'completado') {
+            clearInterval(interval);
+            showReport(data);
+          }
+        } catch (e) {
+          console.error('Error polling:', e);
+        }
+      }, 2000);
+    }
+
+    function updateProgress(data, totalFiles) {
+      const procesados = data.progreso?.procesados || 0;
+      const total = data.progreso?.total || totalFiles;
+      const percent = total > 0 ? Math.round((procesados / total) * 100) : 0;
+
+      document.getElementById('progress-text').textContent = `${procesados} de ${total} archivos procesados`;
+      document.getElementById('progress-percent').textContent = `${percent}%`;
+      document.getElementById('progress-bar').style.width = `${percent}%`;
+
+      const stateMessages = {
+        'procesando_ocr': 'Extrayendo datos de las etiquetas con OCR',
+        'consolidando': 'Cruzando datos con Airtable',
+        'completado': 'Auditoría completada',
+      };
+      document.getElementById('status-message').textContent = stateMessages[data.estado] || 'Procesando...';
+    }
+
+    function showReport(data) {
+      document.getElementById('status-section').classList.add('hidden');
+      document.getElementById('report-section').classList.remove('hidden');
+
+      const r = data.resultado;
+      document.getElementById('summary-ok').textContent = r.total_ok;
+      document.getElementById('summary-errors').textContent = r.total_errores;
+      document.getElementById('summary-orphans').textContent = r.total_huerfanos;
+      document.getElementById('report-content').textContent = data.report_text;
+    }
+
+    function showError(msg) {
+      document.getElementById('status-section').innerHTML = `
+        <div class="text-rose-600 font-semibold">${msg}</div>
+        <button onclick="location.reload()" class="mt-3 text-sm text-indigo-600 hover:underline">
+          Reintentar
+        </button>
+      `;
+    }
+
+    document.getElementById('new-audit-btn').addEventListener('click', () => {
+      location.reload();
+    });
+  </script>
+</body>
+</html>
