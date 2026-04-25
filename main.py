@@ -457,25 +457,49 @@ def consolidate(ocr_results: dict, prescripciones: list, corte_id: str) -> dict:
     Recibe resultados de OCR agrupados por tipo + prescripciones de Airtable.
     Cruza, valida y genera el resultado final.
     """
+    import re
+    LOTE_PATTERN = re.compile(r"^LC-\d+-\d+-\d+-\d+\s*VET", re.IGNORECASE)
+    
     cajas = ocr_results.get("caja", [])
     frascos = ocr_results.get("frasco", [])
     
-    # Agrupar etiquetas por numero_lote
-    cajas_por_lote = {}
-    frascos_por_lote = {}
+    # Filtrar etiquetas con lotes invalidos (OCR errors)
+    def lote_valido(item):
+        lote = (item.get("numero_lote") or "").strip()
+        return bool(LOTE_PATTERN.match(lote))
+    
+    cajas = [c for c in cajas if lote_valido(c)]
+    frascos = [f for f in frascos if lote_valido(f)]
+    
+    # Agrupar etiquetas por (lote, paciente_normalizado)
+    def key_paciente(item):
+        lote = (item.get("numero_lote") or "").strip()
+        paciente = normalize_text(item.get("nombre_paciente") or "")
+        return (lote, paciente)
+    
+    cajas_por_pl = {}  # (lote, paciente) -> [etiquetas]
+    frascos_por_pl = {}
     
     for c in cajas:
-        lote = (c.get("numero_lote") or "").strip()
-        if lote:
-            cajas_por_lote.setdefault(lote, []).append(c)
+        k = key_paciente(c)
+        cajas_por_pl.setdefault(k, []).append(c)
     
     for f in frascos:
+        k = key_paciente(f)
+        frascos_por_pl.setdefault(k, []).append(f)
+    
+    # Tambien por solo lote para totales
+    cajas_por_lote = {}
+    frascos_por_lote = {}
+    for c in cajas:
+        lote = (c.get("numero_lote") or "").strip()
+        cajas_por_lote.setdefault(lote, []).append(c)
+    for f in frascos:
         lote = (f.get("numero_lote") or "").strip()
-        if lote:
-            frascos_por_lote.setdefault(lote, []).append(f)
+        frascos_por_lote.setdefault(lote, []).append(f)
     
     resultados = []
-    lotes_procesados = set()
+    pacientes_procesados = set()  # (lote, paciente_norm)
     
     # 1. Iterar prescripciones oficiales
     for presc in prescripciones:
@@ -484,10 +508,13 @@ def consolidate(ocr_results: dict, prescripciones: list, corte_id: str) -> dict:
             continue
         
         lote_key = str(lote).strip()
-        lotes_procesados.add(lote_key)
-        
         documento = get_col(presc, COL_DOCUMENTO)
         paciente = get_col(presc, COL_NOMBRE_PACIENTE)
+        paciente_norm = normalize_text(paciente or "")
+        
+        pl_key = (lote_key, paciente_norm)
+        pacientes_procesados.add(pl_key)
+        
         cantidad_raw = get_col(presc, COL_CANTIDAD) or 1
         try:
             cantidad = int(cantidad_raw)
@@ -497,25 +524,29 @@ def consolidate(ocr_results: dict, prescripciones: list, corte_id: str) -> dict:
         numero_prescripcion = get_col(presc, COL_NUMERO_PRESCRIPCION)
         acudiente = get_col(presc, COL_NOMBRE_ACUDIENTE)
         
-        cajas_lote = cajas_por_lote.get(lote_key, [])
-        frascos_lote = frascos_por_lote.get(lote_key, [])
+        # Buscar etiquetas con coincidencia EXACTA por (lote, paciente)
+        cajas_pac = cajas_por_pl.get(pl_key, [])
+        frascos_pac = frascos_por_pl.get(pl_key, [])
+        
+        # Si no encuentra exacto, busqueda fuzzy por similitud de nombre dentro del lote
+        if not cajas_pac:
+            for c in cajas_por_lote.get(lote_key, []):
+                if similarity(c.get("nombre_paciente"), paciente) >= 0.8:
+                    cajas_pac.append(c)
+        if not frascos_pac:
+            for f in frascos_por_lote.get(lote_key, []):
+                if similarity(f.get("nombre_paciente"), paciente) >= 0.8:
+                    frascos_pac.append(f)
         
         # Validar campos cruzados
         diferencias = []
-        primera_caja = cajas_lote[0] if cajas_lote else None
+        primera_caja = cajas_pac[0] if cajas_pac else None
         
         if primera_caja and documento and similarity(primera_caja.get("documento_acudiente"), str(documento)) < 0.85:
             diferencias.append({
                 "campo": "documento_acudiente",
                 "valor_etiqueta": primera_caja.get("documento_acudiente"),
                 "valor_registro": str(documento),
-            })
-        
-        if primera_caja and paciente and similarity(primera_caja.get("nombre_paciente"), paciente) < 0.75:
-            diferencias.append({
-                "campo": "nombre_paciente",
-                "valor_etiqueta": primera_caja.get("nombre_paciente"),
-                "valor_registro": paciente,
             })
         
         if primera_caja and acudiente and similarity(primera_caja.get("nombre_acudiente"), acudiente) < 0.75:
@@ -526,11 +557,11 @@ def consolidate(ocr_results: dict, prescripciones: list, corte_id: str) -> dict:
             })
         
         # Determinar estado
-        faltan_cajas = len(cajas_lote) < cantidad
-        faltan_frascos = len(frascos_lote) < cantidad
-        sobran = len(cajas_lote) > cantidad or len(frascos_lote) > cantidad
+        faltan_cajas = len(cajas_pac) < cantidad
+        faltan_frascos = len(frascos_pac) < cantidad
+        sobran = len(cajas_pac) > cantidad or len(frascos_pac) > cantidad
         
-        if not cajas_lote and not frascos_lote:
+        if not cajas_pac and not frascos_pac:
             estado = "prescripcion_no_en_pdf"
         elif faltan_cajas and faltan_frascos:
             estado = "faltan_ambos"
@@ -552,28 +583,21 @@ def consolidate(ocr_results: dict, prescripciones: list, corte_id: str) -> dict:
             "documento_acudiente": documento,
             "numero_prescripcion": numero_prescripcion,
             "cantidad_esperada": cantidad,
-            "cajas_detectadas": len(cajas_lote),
-            "frascos_detectados": len(frascos_lote),
+            "cajas_detectadas": len(cajas_pac),
+            "frascos_detectados": len(frascos_pac),
             "estado": estado,
             "diferencias": diferencias,
         })
     
-    # 2. Lotes huerfanos (en PDFs pero no en Airtable)
-    # IMPORTANTE: Filtrar "lotes" que claramente son OCR errors (no tienen formato LC-X-XXX...)
-    import re
-    LOTE_PATTERN = re.compile(r"^LC-\d+-\d+-\d+-\d+\s*VET", re.IGNORECASE)
-    
-    todos_lotes_ocr = set(cajas_por_lote.keys()) | set(frascos_por_lote.keys())
-    for lote in todos_lotes_ocr:
-        if lote in lotes_procesados:
+    # 2. Etiquetas huerfanas (paciente+lote en PDFs pero no en Airtable)
+    todas_combinaciones = set(cajas_por_pl.keys()) | set(frascos_por_pl.keys())
+    for pl_key in todas_combinaciones:
+        if pl_key in pacientes_procesados:
             continue
-        # Filtrar lotes invalidos (OCR errors): cedulas, fechas, codigos extranos
-        if not LOTE_PATTERN.match(lote.strip()):
-            print(f"  Ignorando lote invalido: {lote}")
-            continue
-        cajas_lote = cajas_por_lote.get(lote, [])
-        frascos_lote = frascos_por_lote.get(lote, [])
-        muestra = (cajas_lote[0] if cajas_lote else frascos_lote[0]) if (cajas_lote or frascos_lote) else {}
+        lote, paciente_norm = pl_key
+        cajas_h = cajas_por_pl.get(pl_key, [])
+        frascos_h = frascos_por_pl.get(pl_key, [])
+        muestra = (cajas_h[0] if cajas_h else frascos_h[0]) if (cajas_h or frascos_h) else {}
         
         resultados.append({
             "numero_lote": lote,
@@ -582,8 +606,8 @@ def consolidate(ocr_results: dict, prescripciones: list, corte_id: str) -> dict:
             "documento_acudiente": muestra.get("documento_acudiente"),
             "numero_prescripcion": None,
             "cantidad_esperada": 0,
-            "cajas_detectadas": len(cajas_lote),
-            "frascos_detectados": len(frascos_lote),
+            "cajas_detectadas": len(cajas_h),
+            "frascos_detectados": len(frascos_h),
             "estado": "prescripcion_no_en_db",
             "diferencias": [],
         })
