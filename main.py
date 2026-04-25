@@ -13,8 +13,10 @@ from typing import Optional
 from uuid import uuid4
 
 import httpx
+import fitz  # pymupdf
 from fastapi import FastAPI, File, Form, UploadFile, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi import Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -54,6 +56,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
 # Estado en memoria de cortes en proceso (simple, sin Redis)
@@ -181,23 +184,51 @@ def get_prompt_for_type(tipo: str) -> str:
     }.get(tipo, PROMPT_CAJA)
 
 
-async def image_to_base64(file_bytes: bytes, filename: str) -> str:
-    """Convierte cualquier formato a PNG base64. Para PDFs intenta usar primera pagina."""
-    try:
-        # Intentar abrir como imagen normal
-        img = Image.open(io.BytesIO(file_bytes))
-        # Convertir a RGB si tiene canal alpha (PNG con transparencia)
-        if img.mode in ("RGBA", "LA", "P"):
-            img = img.convert("RGB")
-        # Redimensionar si es muy grande (max 2000px en el lado mayor)
-        if max(img.size) > 2000:
-            img.thumbnail((2000, 2000))
-        buf = io.BytesIO()
-        img.save(buf, format="PNG", optimize=True)
-        return base64.b64encode(buf.getvalue()).decode()
-    except Exception as e:
-        # Si es PDF u otro formato, devolver crudo (OpenAI puede leer PDFs)
-        return base64.b64encode(file_bytes).decode()
+async def file_to_images_b64(file_bytes: bytes, filename: str) -> list[str]:
+    """
+    Convierte un archivo (PDF o imagen) a una lista de imágenes en base64.
+    Si es PDF: cada pagina se convierte a una imagen separada.
+    Si es imagen: retorna lista con una sola imagen.
+    """
+    is_pdf = filename.lower().endswith(".pdf") or file_bytes[:4] == b"%PDF"
+    
+    if is_pdf:
+        # Procesar PDF pagina por pagina
+        images_b64 = []
+        try:
+            pdf_doc = fitz.open(stream=file_bytes, filetype="pdf")
+            for page_num in range(len(pdf_doc)):
+                page = pdf_doc[page_num]
+                # Renderizar a 200 DPI (buena calidad sin ser excesivo)
+                pix = page.get_pixmap(dpi=200)
+                img_bytes = pix.tobytes("png")
+                
+                # Redimensionar si es muy grande
+                img = Image.open(io.BytesIO(img_bytes))
+                if max(img.size) > 2000:
+                    img.thumbnail((2000, 2000))
+                buf = io.BytesIO()
+                img.save(buf, format="PNG", optimize=True)
+                images_b64.append(base64.b64encode(buf.getvalue()).decode())
+            pdf_doc.close()
+            return images_b64
+        except Exception as e:
+            print(f"Error procesando PDF {filename}: {e}")
+            return []
+    else:
+        # Es una imagen normal
+        try:
+            img = Image.open(io.BytesIO(file_bytes))
+            if img.mode in ("RGBA", "LA", "P"):
+                img = img.convert("RGB")
+            if max(img.size) > 2000:
+                img.thumbnail((2000, 2000))
+            buf = io.BytesIO()
+            img.save(buf, format="PNG", optimize=True)
+            return [base64.b64encode(buf.getvalue()).decode()]
+        except Exception as e:
+            print(f"Error procesando imagen {filename}: {e}")
+            return []
 
 
 # ============================================================
@@ -639,10 +670,25 @@ async def process_corte(corte_id: str, corte_nombre: str, archivos: list):
     # 2. OCR en paralelo para cada tipo
     async def process_one(archivo, tipo):
         prompt = get_prompt_for_type(tipo)
-        b64 = await image_to_base64(archivo["content"], archivo["filename"])
-        result = await ocr_with_openai(b64, prompt, semaphore)
+        # Convertir archivo a lista de imagenes (PDF -> N paginas, Imagen -> 1)
+        images_b64 = await file_to_images_b64(archivo["content"], archivo["filename"])
+        
+        if not images_b64:
+            print(f"  ! No se pudo procesar {archivo['filename']}")
+            cortes_en_proceso[corte_id]["progreso"]["procesados"] += 1
+            return []
+        
+        print(f"  Procesando {archivo['filename']}: {len(images_b64)} pagina(s)")
+        
+        # Procesar cada pagina con OCR
+        all_results = []
+        for idx, img_b64 in enumerate(images_b64):
+            result = await ocr_with_openai(img_b64, prompt, semaphore)
+            page_results = result.get("results", [])
+            all_results.extend(page_results)
+        
         cortes_en_proceso[corte_id]["progreso"]["procesados"] += 1
-        return result.get("results", [])
+        return all_results
     
     ocr_results = {"caja": [], "frasco": [], "prescripcion": [], "envio": []}
     
