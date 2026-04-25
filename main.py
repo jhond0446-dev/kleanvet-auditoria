@@ -282,7 +282,7 @@ async def file_to_images_b64(file_bytes: bytes, filename: str) -> list[str]:
 # ============================================================
 
 async def ocr_pdf_with_claude(pdf_bytes: bytes, prompt: str, semaphore: asyncio.Semaphore) -> dict:
-    """Procesa un PDF completo con Claude Sonnet 4.5 (PDF nativo)."""
+    """Procesa un PDF completo con Claude Sonnet 4.6 (PDF nativo)."""
     async with semaphore:
         async with httpx.AsyncClient(timeout=300.0) as client:
             try:
@@ -295,7 +295,7 @@ async def ocr_pdf_with_claude(pdf_bytes: bytes, prompt: str, semaphore: asyncio.
                         "content-type": "application/json",
                     },
                     json={
-                        "model": "claude-sonnet-4-5",
+                        "model": "claude-sonnet-4-6",
                         "max_tokens": 16000,
                         "messages": [
                             {
@@ -337,7 +337,7 @@ async def ocr_image_with_claude(image_b64: str, prompt: str, semaphore: asyncio.
                         "content-type": "application/json",
                     },
                     json={
-                        "model": "claude-sonnet-4-5",
+                        "model": "claude-sonnet-4-6",
                         "max_tokens": 8000,
                         "messages": [
                             {
