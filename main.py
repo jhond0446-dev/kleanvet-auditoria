@@ -64,34 +64,104 @@ cortes_en_proceso = {}
 # PROMPTS DE OCR
 # ============================================================
 
-PROMPT_CAJA = """Eres un motor de extraccion OCR para etiquetas farmaceuticas veterinarias.
+PROMPT_CAJA = """Eres un motor de extraccion OCR para etiquetas farmaceuticas veterinarias de CAJA.
 
-La imagen contiene una o varias etiquetas de CAJA. Extrae cada etiqueta como un objeto en un array JSON.
+CONTEXTO IMPORTANTE: La imagen contiene MULTIPLES etiquetas (tipicamente 3 etiquetas lado a lado por fila). Cada etiqueta es INDEPENDIENTE. NO mezcles datos entre etiquetas vecinas.
 
-REGLAS CRITICAS:
-- "Martha Lopez" SIEMPRE va en preparado_por, NUNCA en nombre_acudiente
-- Si no hay nombre acudiente legible, devuelve null
-- Lectura vertical: el valor esta debajo del titulo
-- No mezcles datos entre etiquetas vecinas
+Extrae CADA etiqueta visible como un objeto separado en un array JSON. Si ves 9 etiquetas, devuelve 9 objetos.
 
-CAMPOS por etiqueta:
-1. numero_lote (bajo "N° Lote")
-2. nombre_paciente
-3. nombre_acudiente (NO Martha Lopez)
-4. documento_acudiente
-5. ubicacion
-6. preparado_por (aqui SI Martha Lopez)
-7. fecha_hora_preparacion
-8. fecha_limite_uso
-9. dosis
-10. via_administracion
-11. producto: "CBD X%" donde X es cualquier numero (ej: CBD 1%, CBD 3%). Null si no esta.
-12. codigo_formato: codigo arriba derecha tipo CP-FM-FO-218
+REGLAS CRITICAS DE LECTURA:
 
-Responde SOLO con array JSON valido, sin markdown:
+1. NUMERO_LOTE: SIEMPRE tiene el formato "LC-X-XXX-XX-XX VET" (ej: "LC-1-038-03-26 VET", "LC-1-049-03-26 VET"). 
+   - SIEMPRE empieza con "LC-" 
+   - SIEMPRE termina con "VET"
+   - Si lo que ves NO empieza con "LC-" y NO termina con "VET", NO es el lote.
+   - Aparece bajo el titulo "N° Lote:"
+   - Si no encuentras un lote con este formato, devuelve null
+
+2. DOCUMENTO_ACUDIENTE: Es un numero (cedula o NIT), tipicamente 7-11 digitos.
+   - NUNCA es el numero de lote
+   - NUNCA empieza con "LC"
+   - Aparece bajo "N° Documento de Identidad Acudiente:"
+
+3. NOMBRE_PACIENTE: Aparece bajo "Nombre del Paciente:" (PRIMER campo de la etiqueta, arriba)
+   - Es UN solo nombre corto: "Jade", "Milo", "Sasha", "Bruno", "Sol", "Tony"
+   - NO confundir con nombre_acudiente
+
+4. NOMBRE_ACUDIENTE: Aparece bajo "Nombre Acudiente:" 
+   - Es el nombre completo del DUEÑO/empresa: "Javier Garcia", "Daniela Gomez", "World pets"
+   - NUNCA es "Martha Lopez" (Martha Lopez es siempre preparado_por)
+
+5. PREPARADO_POR y QF: SIEMPRE es "Martha Lopez" (sin importar lo que parezca)
+
+REGLA ANTI-CONFUSION:
+- Si extraes algo como numero_lote y NO tiene formato "LC-X-XXX-XX-XX VET", devuelve null en numero_lote
+- Si extraes algo como documento_acudiente y empieza con "LC", lo confundiste, intercambia los campos
+
+CAMPOS POR ETIQUETA (objeto JSON):
+{
+  "numero_lote": "LC-X-XXX-XX-XX VET" o null,
+  "nombre_paciente": "string" (corto, una palabra usualmente),
+  "nombre_acudiente": "string" (NO Martha Lopez, NO null si es legible),
+  "documento_acudiente": "string" (solo digitos),
+  "ubicacion": "string" (ciudad),
+  "preparado_por": "Martha Lopez",
+  "fecha_hora_preparacion": "DD/MM/AAAA HH:MMam/pm",
+  "fecha_limite_uso": "DD/MES/AAAA",
+  "dosis": "string",
+  "via_administracion": "Oral",
+  "producto": "CBD X%" o null,
+  "codigo_formato": "CP-FM-FO-218" (codigo arriba derecha)
+}
+
+Responde SOLO con array JSON valido, sin markdown, sin texto extra:
+[{...}, {...}, ...]"""
+
+PROMPT_FRASCO = """Eres un motor de extraccion OCR para etiquetas farmaceuticas veterinarias de FRASCO.
+
+CONTEXTO IMPORTANTE: La imagen contiene MULTIPLES etiquetas de FRASCO (tipicamente 2-3 etiquetas lado a lado, layout HORIZONTAL). Cada etiqueta es INDEPENDIENTE. NO mezcles datos entre etiquetas vecinas.
+
+Extrae CADA etiqueta visible como un objeto separado en un array JSON.
+
+REGLAS CRITICAS DE LECTURA:
+
+1. NUMERO_LOTE: SIEMPRE tiene el formato "LC-X-XXX-XX-XX VET" (ej: "LC-1-038-03-26 VET").
+   - SIEMPRE empieza con "LC-" 
+   - SIEMPRE termina con "VET"
+   - Si lo que ves NO tiene este formato, NO es el lote (devuelve null)
+   - Aparece bajo "N° Lote:"
+
+2. DOCUMENTO_ACUDIENTE: Numero de cedula/NIT (7-11 digitos puros).
+   - NUNCA empieza con "LC"
+   - Aparece bajo "N° Documento de identidad Acudiente:"
+
+3. NOMBRE_PACIENTE: Aparece bajo "Nombre paciente:" (arriba a la izquierda)
+   - Una palabra corta: "Jade", "Milo", "Sol"
+
+4. NOMBRE_ACUDIENTE: Aparece bajo "Nombre Acudiente:"
+   - Nombre completo de persona/empresa
+   - NUNCA es "Martha Lopez"
+
+5. PREPARADO_POR y QF: SIEMPRE "Martha Lopez"
+
+CAMPOS POR ETIQUETA:
+{
+  "numero_lote": "LC-X-XXX-XX-XX VET" o null,
+  "nombre_paciente": "string" corto,
+  "nombre_acudiente": "string" (NO Martha Lopez),
+  "documento_acudiente": "string" digitos,
+  "ubicacion": "string",
+  "preparado_por": "Martha Lopez",
+  "fecha_hora_preparacion": "string",
+  "fecha_limite_uso": "string",
+  "dosis": "string",
+  "via_administracion": "Oral",
+  "producto": "CBD X%" o null,
+  "codigo_formato": "CP-FM-FO-217"
+}
+
+Responde SOLO con array JSON valido:
 [{...}, {...}]"""
-
-PROMPT_FRASCO = PROMPT_CAJA.replace("CAJA", "FRASCO").replace("CP-FM-FO-218", "CP-FM-FO-217")
 
 PROMPT_PRESCRIPCION = """Eres un motor OCR para recetas medicas veterinarias.
 
@@ -197,14 +267,14 @@ async def file_to_images_b64(file_bytes: bytes, filename: str) -> list[str]:
             pdf_doc = fitz.open(stream=file_bytes, filetype="pdf")
             for page_num in range(len(pdf_doc)):
                 page = pdf_doc[page_num]
-                # Renderizar a 200 DPI (buena calidad sin ser excesivo)
-                pix = page.get_pixmap(dpi=200)
+                # Renderizar a 300 DPI para mejor OCR
+                pix = page.get_pixmap(dpi=300)
                 img_bytes = pix.tobytes("png")
                 
-                # Redimensionar si es muy grande
+                # Redimensionar si es muy grande (max 2400px lado mayor)
                 img = Image.open(io.BytesIO(img_bytes))
-                if max(img.size) > 2000:
-                    img.thumbnail((2000, 2000))
+                if max(img.size) > 2400:
+                    img.thumbnail((2400, 2400))
                 buf = io.BytesIO()
                 img.save(buf, format="PNG", optimize=True)
                 images_b64.append(base64.b64encode(buf.getvalue()).decode())
@@ -254,13 +324,15 @@ async def ocr_with_openai(image_b64: str, prompt: str, semaphore: asyncio.Semaph
                                     {
                                         "type": "image_url",
                                         "image_url": {
-                                            "url": f"data:image/png;base64,{image_b64}"
+                                            "url": f"data:image/png;base64,{image_b64}",
+                                            "detail": "high",
                                         },
                                     },
                                 ],
                             }
                         ],
                         "max_tokens": 4000,
+                        "temperature": 0,
                     },
                 )
                 response.raise_for_status()
@@ -487,9 +559,17 @@ def consolidate(ocr_results: dict, prescripciones: list, corte_id: str) -> dict:
         })
     
     # 2. Lotes huerfanos (en PDFs pero no en Airtable)
+    # IMPORTANTE: Filtrar "lotes" que claramente son OCR errors (no tienen formato LC-X-XXX...)
+    import re
+    LOTE_PATTERN = re.compile(r"^LC-\d+-\d+-\d+-\d+\s*VET", re.IGNORECASE)
+    
     todos_lotes_ocr = set(cajas_por_lote.keys()) | set(frascos_por_lote.keys())
     for lote in todos_lotes_ocr:
         if lote in lotes_procesados:
+            continue
+        # Filtrar lotes invalidos (OCR errors): cedulas, fechas, codigos extranos
+        if not LOTE_PATTERN.match(lote.strip()):
+            print(f"  Ignorando lote invalido: {lote}")
             continue
         cajas_lote = cajas_por_lote.get(lote, [])
         frascos_lote = frascos_por_lote.get(lote, [])
@@ -513,10 +593,26 @@ def consolidate(ocr_results: dict, prescripciones: list, corte_id: str) -> dict:
     total_errores = sum(1 for r in resultados if r["estado"] != "ok" and r["estado"] != "prescripcion_no_en_db")
     total_huerfanos = sum(1 for r in resultados if r["estado"] == "prescripcion_no_en_db")
     
+    # Calcular unidades esperadas (suma de cantidad de todas las prescripciones)
+    total_unidades_esperadas = 0
+    for presc in prescripciones:
+        cantidad_raw = get_col(presc, COL_CANTIDAD) or 1
+        try:
+            total_unidades_esperadas += int(cantidad_raw)
+        except (TypeError, ValueError):
+            total_unidades_esperadas += 1
+    
+    # Calcular unidades detectadas en PDFs
+    total_cajas_detectadas = sum(len(cajas_por_lote.get(l, [])) for l in cajas_por_lote)
+    total_frascos_detectados = sum(len(frascos_por_lote.get(l, [])) for l in frascos_por_lote)
+    
     return {
         "corte_id": corte_id,
         "fecha": datetime.now().isoformat(),
         "total_prescripciones": len(prescripciones),
+        "total_unidades_esperadas": total_unidades_esperadas,
+        "total_cajas_detectadas": total_cajas_detectadas,
+        "total_frascos_detectados": total_frascos_detectados,
         "total_ok": total_ok,
         "total_errores": total_errores,
         "total_huerfanos": total_huerfanos,
@@ -536,10 +632,13 @@ def build_report_text(corte_nombre: str, resultado: dict) -> str:
     msg += f"🏷 Corte: {corte_nombre}\n"
     msg += f"📅 Fecha: {fecha}\n\n"
     msg += f"📈 *RESUMEN*\n"
+    msg += f"📋 Prescripciones: {resultado['total_prescripciones']}\n"
+    msg += f"📦 Unidades esperadas: {resultado.get('total_unidades_esperadas', 0)}\n"
+    msg += f"🔍 Cajas detectadas: {resultado.get('total_cajas_detectadas', 0)}\n"
+    msg += f"🔍 Frascos detectados: {resultado.get('total_frascos_detectados', 0)}\n\n"
     msg += f"✅ Completas: {resultado['total_ok']}\n"
     msg += f"⚠️ Con problemas: {resultado['total_errores']}\n"
     msg += f"🚨 Huérfanos: {resultado['total_huerfanos']}\n"
-    msg += f"📋 Total prescripciones: {resultado['total_prescripciones']}\n\n"
     msg += "─" * 30 + "\n"
     
     # Agrupar por estado
